@@ -9,6 +9,7 @@ import multiprocessing
 import shutil
 import re
 import platform
+import time
 
 # ================== FIX GUI APP PATH ==================
 os.environ["PATH"] = (
@@ -146,37 +147,227 @@ def setup_build_environment():
     env = os.environ.copy()
     
     if not BREW_PREFIX:
-        return env
+        log("⚠️  Warning: Homebrew prefix not detected, using defaults\n")
+    
+    # Build comprehensive PATH
+    path_components = []
     
     # Add Homebrew to PATH
-    env["PATH"] = f"{BREW_PREFIX}/bin:{env['PATH']}"
+    if BREW_PREFIX:
+        path_components.append(f"{BREW_PREFIX}/bin")
     
-    # Add Cargo to PATH
-    cargo_bin = os.path.expanduser("~/.cargo/bin")
-    if os.path.exists(cargo_bin):
-        env["PATH"] = f"{cargo_bin}:{env['PATH']}"
+    # Add common Homebrew locations
+    path_components.extend([
+        "/opt/homebrew/bin",
+        "/usr/local/bin"
+    ])
+    
+    # Add Cargo/Rust paths (multiple possible locations)
+    rust_paths = [
+        os.path.expanduser("~/.cargo/bin"),
+        f"{BREW_PREFIX}/bin" if BREW_PREFIX else None,
+    ]
+    for rust_path in rust_paths:
+        if rust_path and os.path.isdir(rust_path):
+            path_components.append(rust_path)
+    
+    # Add LLVM for Electrs
+    llvm_paths = [
+        f"{BREW_PREFIX}/opt/llvm/bin" if BREW_PREFIX else None,
+        "/opt/homebrew/opt/llvm/bin",
+        "/usr/local/opt/llvm/bin"
+    ]
+    for llvm_path in llvm_paths:
+        if llvm_path and os.path.isdir(llvm_path):
+            path_components.append(llvm_path)
+    
+    # Add existing PATH
+    path_components.append(env.get('PATH', ''))
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_paths = []
+    for p in path_components:
+        if p and p not in seen:
+            seen.add(p)
+            unique_paths.append(p)
+    
+    env["PATH"] = ":".join(unique_paths)
     
     # LLVM setup for Electrs
-    llvm_prefix = f"{BREW_PREFIX}/opt/llvm"
-    if os.path.isdir(llvm_prefix):
-        env["PATH"] = f"{llvm_prefix}/bin:{env['PATH']}"
-        env["LIBCLANG_PATH"] = f"{llvm_prefix}/lib"
-        env["DYLD_LIBRARY_PATH"] = f"{llvm_prefix}/lib"
+    llvm_lib_paths = [
+        f"{BREW_PREFIX}/opt/llvm" if BREW_PREFIX else None,
+        "/opt/homebrew/opt/llvm",
+        "/usr/local/opt/llvm"
+    ]
+    for llvm_prefix in llvm_lib_paths:
+        if llvm_prefix and os.path.isdir(llvm_prefix):
+            env["LIBCLANG_PATH"] = f"{llvm_prefix}/lib"
+            env["DYLD_LIBRARY_PATH"] = f"{llvm_prefix}/lib"
+            break
     
     # Berkeley DB for Bitcoin
-    bdb_prefix = f"{BREW_PREFIX}/opt/berkeley-db@4"
-    if os.path.isdir(bdb_prefix):
-        env["BDB_PREFIX"] = bdb_prefix
+    bdb_paths = [
+        f"{BREW_PREFIX}/opt/berkeley-db@4" if BREW_PREFIX else None,
+        "/opt/homebrew/opt/berkeley-db@4",
+        "/usr/local/opt/berkeley-db@4"
+    ]
+    for bdb_prefix in bdb_paths:
+        if bdb_prefix and os.path.isdir(bdb_prefix):
+            env["BDB_PREFIX"] = bdb_prefix
+            break
     
     # OpenSSL
-    openssl_prefix = f"{BREW_PREFIX}/opt/openssl"
-    if os.path.isdir(openssl_prefix):
-        env["OPENSSL_ROOT_DIR"] = openssl_prefix
-        env["PKG_CONFIG_PATH"] = f"{openssl_prefix}/lib/pkgconfig:{env.get('PKG_CONFIG_PATH', '')}"
+    openssl_paths = [
+        f"{BREW_PREFIX}/opt/openssl" if BREW_PREFIX else None,
+        "/opt/homebrew/opt/openssl",
+        "/usr/local/opt/openssl"
+    ]
+    for openssl_prefix in openssl_paths:
+        if openssl_prefix and os.path.isdir(openssl_prefix):
+            env["OPENSSL_ROOT_DIR"] = openssl_prefix
+            existing_pkg_config = env.get('PKG_CONFIG_PATH', '')
+            env["PKG_CONFIG_PATH"] = f"{openssl_prefix}/lib/pkgconfig:{existing_pkg_config}"
+            break
     
     return env
 
 # ================== DEPENDENCY CHECKER ==================
+def check_rust_installation():
+    """Comprehensive Rust/Cargo check and installation"""
+    log("\n=== Checking Rust Toolchain ===\n")
+    
+    # Possible Rust installation paths
+    rust_paths = [
+        os.path.expanduser("~/.cargo/bin"),
+        f"{BREW_PREFIX}/bin" if BREW_PREFIX else None,
+        "/usr/local/bin",
+        "/opt/homebrew/bin"
+    ]
+    rust_paths = [p for p in rust_paths if p]  # Remove None values
+    
+    # Check if rustc is accessible
+    rustc_found = False
+    cargo_found = False
+    rustc_path = None
+    cargo_path = None
+    
+    for path in rust_paths:
+        rustc_candidate = os.path.join(path, "rustc")
+        cargo_candidate = os.path.join(path, "cargo")
+        
+        if os.path.isfile(rustc_candidate) and not rustc_found:
+            # Test if it works
+            result = subprocess.run(
+                [rustc_candidate, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if result.returncode == 0:
+                rustc_found = True
+                rustc_path = rustc_candidate
+                log(f"✓ rustc found at: {rustc_path}\n")
+                log(f"  Version: {result.stdout.strip()}\n")
+        
+        if os.path.isfile(cargo_candidate) and not cargo_found:
+            result = subprocess.run(
+                [cargo_candidate, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if result.returncode == 0:
+                cargo_found = True
+                cargo_path = cargo_candidate
+                log(f"✓ cargo found at: {cargo_path}\n")
+                log(f"  Version: {result.stdout.strip()}\n")
+    
+    # If not found, install Rust via Homebrew
+    if not rustc_found or not cargo_found:
+        log("\n❌ Rust toolchain not found or incomplete!\n")
+        log("Installing Rust via Homebrew...\n")
+        
+        try:
+            # First, check if rust formula exists
+            result = subprocess.run(
+                [BREW, "info", "rust"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                log("📦 Installing rust from Homebrew...\n")
+                run_command(f"{BREW} install rust")
+                
+                # Verify installation
+                log("\nVerifying Rust installation...\n")
+                time.sleep(2)  # Give it a moment
+                
+                # Check again
+                for path in rust_paths:
+                    rustc_candidate = os.path.join(path, "rustc")
+                    cargo_candidate = os.path.join(path, "cargo")
+                    
+                    if os.path.isfile(rustc_candidate):
+                        result = subprocess.run(
+                            [rustc_candidate, "--version"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        if result.returncode == 0:
+                            log(f"✓ rustc installed successfully: {result.stdout.strip()}\n")
+                            rustc_found = True
+                            break
+                
+                for path in rust_paths:
+                    cargo_candidate = os.path.join(path, "cargo")
+                    if os.path.isfile(cargo_candidate):
+                        result = subprocess.run(
+                            [cargo_candidate, "--version"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            text=True
+                        )
+                        if result.returncode == 0:
+                            log(f"✓ cargo installed successfully: {result.stdout.strip()}\n")
+                            cargo_found = True
+                            break
+                
+                if not rustc_found or not cargo_found:
+                    log("⚠️  Rust installation may have succeeded but binaries not found in PATH\n")
+                    log("You may need to restart the app or your terminal\n")
+                    messagebox.showwarning(
+                        "Rust Installation",
+                        "Rust was installed but may not be in PATH.\n\n"
+                        "Please:\n"
+                        "1. Close and reopen this app\n"
+                        "2. OR manually add ~/.cargo/bin to your PATH"
+                    )
+            else:
+                log("❌ Rust formula not found in Homebrew\n")
+                log("Attempting alternative installation method...\n")
+                messagebox.showerror(
+                    "Rust Installation Failed",
+                    "Could not install Rust via Homebrew.\n\n"
+                    "Please install manually:\n"
+                    "1. Visit https://rustup.rs\n"
+                    "2. Run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n"
+                    "3. Restart this app"
+                )
+                
+        except Exception as e:
+            log(f"❌ Failed to install Rust: {e}\n")
+            messagebox.showerror(
+                "Installation Error",
+                f"Failed to install Rust: {e}\n\n"
+                "Please install manually from https://rustup.rs"
+            )
+    
+    return rustc_found and cargo_found
+
 def check_dependencies():
     """Check and install required system dependencies"""
     def task():
@@ -190,8 +381,9 @@ def check_dependencies():
                 return
 
             log(f"✓ Homebrew found at: {BREW}\n")
+            log(f"  Homebrew prefix: {BREW_PREFIX}\n")
 
-            # Required Homebrew packages
+            # Required Homebrew packages (excluding rust, we check that separately)
             brew_packages = [
                 "automake", "libtool", "pkg-config", "boost",
                 "berkeley-db@4", "openssl", "miniupnpc",
@@ -214,7 +406,7 @@ def check_dependencies():
                     log(f"  ✓ {pkg}\n")
 
             if missing:
-                log(f"\n⚠️  Missing packages: {', '.join(missing)}\n")
+                log(f"\n⚠️  Missing Homebrew packages: {', '.join(missing)}\n")
                 if messagebox.askyesno(
                     "Install Missing Dependencies",
                     f"The following packages are missing:\n\n{chr(10).join(missing)}\n\nInstall now?"
@@ -226,59 +418,40 @@ def check_dependencies():
                             log(f"✓ {pkg} installed successfully\n")
                         except Exception as e:
                             log(f"❌ Failed to install {pkg}: {e}\n")
+                            messagebox.showerror("Installation Failed", f"Failed to install {pkg}: {e}")
                 else:
                     log("\n⚠️  Dependencies not installed. Compilation may fail.\n")
             else:
                 log("\n✓ All Homebrew packages are installed!\n")
 
-            # Check Rust and Cargo
-            log("\nChecking Rust toolchain...\n")
-            env = setup_build_environment()
-
-            result = subprocess.run(
-                ["rustc", "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env
-            )
+            # Comprehensive Rust check
+            rust_ok = check_rust_installation()
             
-            if result.returncode != 0:
-                log("❌ Rust not found. Installing via Homebrew...\n")
-                try:
-                    run_command(f"{BREW} install rust")
-                    log("✓ Rust installed successfully\n")
-                except Exception as e:
-                    log(f"❌ Failed to install Rust: {e}\n")
+            if rust_ok:
+                log("\n✓ Rust toolchain is ready!\n")
             else:
-                log(f"✓ Rust found: {result.stdout.strip()}\n")
-
-            result = subprocess.run(
-                ["cargo", "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env
-            )
-            
-            if result.returncode != 0:
-                log("❌ Cargo not found. Installing via Homebrew...\n")
-                try:
-                    run_command(f"{BREW} install rust")
-                    log("✓ Cargo installed successfully\n")
-                except Exception as e:
-                    log(f"❌ Failed to install Cargo: {e}\n")
-            else:
-                log(f"✓ Cargo found: {result.stdout.strip()}\n")
+                log("\n⚠️  Rust toolchain needs attention (see messages above)\n")
 
             log("\n=== Dependency Check Complete ===\n")
-            messagebox.showinfo(
-                "Dependency Check",
-                "All dependencies checked!\n\nYou can now proceed with compilation."
-            )
+            
+            if rust_ok:
+                messagebox.showinfo(
+                    "Dependency Check",
+                    "✅ All dependencies are installed and ready!\n\n"
+                    "You can now proceed with compilation."
+                )
+            else:
+                messagebox.showwarning(
+                    "Dependency Check",
+                    "⚠️  Some dependencies need attention.\n\n"
+                    "Check the log for details.\n"
+                    "You may need to restart the app after installing Rust."
+                )
 
         except Exception as e:
             log(f"\n❌ Error during dependency check: {e}\n")
+            import traceback
+            log(traceback.format_exc() + "\n")
             messagebox.showerror("Error", f"Dependency check failed: {e}")
 
     threading.Thread(target=task, daemon=True).start()
@@ -322,12 +495,24 @@ def copy_binaries(src_dir, dest_dir, binary_files):
     os.makedirs(dest_dir, exist_ok=True)
     copied = []
     
+    log(f"Copying binaries to: {dest_dir}\n")
+    
     for binary in binary_files:
         if os.path.exists(binary):
-            dest = os.path.join(dest_dir, os.path.basename(binary))
-            shutil.copy2(binary, dest)
-            copied.append(dest)
-            log(f"✓ Copied: {os.path.basename(binary)} → {dest}\n")
+            try:
+                dest = os.path.join(dest_dir, os.path.basename(binary))
+                shutil.copy2(binary, dest)
+                # Make executable
+                os.chmod(dest, 0o755)
+                copied.append(dest)
+                log(f"✓ Copied: {os.path.basename(binary)} → {dest}\n")
+            except Exception as e:
+                log(f"⚠️  Failed to copy {os.path.basename(binary)}: {e}\n")
+        else:
+            log(f"⚠️  Binary not found (skipping): {binary}\n")
+    
+    if not copied:
+        log(f"❌ WARNING: No binaries were copied!\n")
     
     return copied
 
@@ -360,6 +545,13 @@ def compile_bitcoin_source(version, build_dir, cores):
 
         # Setup environment
         env = setup_build_environment()
+        
+        log(f"\nEnvironment setup:\n")
+        log(f"  PATH: {env['PATH'][:150]}...\n")
+        if 'BDB_PREFIX' in env:
+            log(f"  BDB_PREFIX: {env['BDB_PREFIX']}\n")
+        if 'OPENSSL_ROOT_DIR' in env:
+            log(f"  OPENSSL_ROOT_DIR: {env['OPENSSL_ROOT_DIR']}\n")
         
         # Determine build method
         if use_cmake(version):
@@ -425,6 +617,12 @@ def compile_bitcoin_source(version, build_dir, cores):
         output_dir = os.path.join(build_dir, "binaries", f"bitcoin-{version_clean}")
         copied = copy_binaries(src_dir, output_dir, binaries)
         
+        if not copied:
+            log(f"⚠️  Warning: No binaries were copied. Checking what exists...\n")
+            for binary in binaries:
+                exists = "✓" if os.path.exists(binary) else "❌"
+                log(f"  {exists} {binary}\n")
+        
         log(f"\n{'='*60}\n")
         log(f"✅ BITCOIN CORE {version} COMPILED SUCCESSFULLY!\n")
         log(f"{'='*60}\n")
@@ -435,6 +633,8 @@ def compile_bitcoin_source(version, build_dir, cores):
 
     except Exception as e:
         log(f"\n❌ Error compiling Bitcoin: {e}\n")
+        import traceback
+        log(f"\nFull traceback:\n{traceback.format_exc()}\n")
         raise
 
 def compile_electrs_source(version, build_dir, cores):
@@ -443,6 +643,48 @@ def compile_electrs_source(version, build_dir, cores):
         log(f"\n{'='*60}\n")
         log(f"COMPILING ELECTRS {version}\n")
         log(f"{'='*60}\n")
+        
+        # Setup environment with LLVM
+        env = setup_build_environment()
+        
+        # Verify Rust is available before proceeding
+        log("\n🔍 Verifying Rust installation...\n")
+        cargo_check = subprocess.run(
+            ["cargo", "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env
+        )
+        
+        if cargo_check.returncode != 0:
+            error_msg = (
+                "❌ Cargo not found in PATH!\n\n"
+                "Electrs requires Rust/Cargo to compile.\n\n"
+                "Please:\n"
+                "1. Click 'Check & Install Dependencies' button\n"
+                "2. Ensure Rust is installed\n"
+                "3. Restart this application\n\n"
+                f"Current PATH: {env['PATH'][:200]}...\n"
+            )
+            log(error_msg)
+            messagebox.showerror("Rust Not Found", error_msg)
+            raise RuntimeError("Cargo not found - cannot compile Electrs")
+        
+        log(f"✓ Cargo found: {cargo_check.stdout.strip()}\n")
+        
+        rustc_check = subprocess.run(
+            ["rustc", "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env
+        )
+        
+        if rustc_check.returncode == 0:
+            log(f"✓ Rustc found: {rustc_check.stdout.strip()}\n")
+        else:
+            log("⚠️  Warning: rustc check failed, but cargo found. Proceeding...\n")
         
         version_clean = version.lstrip('v')
         src_dir = os.path.join(build_dir, f"electrs-{version_clean}")
@@ -456,23 +698,30 @@ def compile_electrs_source(version, build_dir, cores):
             tarball = f"electrs-{version_clean}.tar.gz"
             run_command(
                 f"curl -L https://github.com/romanz/electrs/archive/refs/tags/{version}.tar.gz -o {tarball}",
-                cwd=build_dir
+                cwd=build_dir,
+                env=env
             )
             log(f"\n📦 Extracting {tarball}...\n")
-            run_command(f"tar xzf {tarball}", cwd=build_dir)
+            run_command(f"tar xzf {tarball}", cwd=build_dir, env=env)
             log(f"✓ Source extracted to {src_dir}\n")
         else:
             log(f"✓ Source directory already exists: {src_dir}\n")
-
-        # Setup environment with LLVM
-        env = setup_build_environment()
         
         log(f"\n🔧 Building with Cargo ({cores} jobs)...\n")
+        log(f"Environment details:\n")
+        log(f"  PATH: {env['PATH'][:150]}...\n")
+        if 'LIBCLANG_PATH' in env:
+            log(f"  LIBCLANG_PATH: {env['LIBCLANG_PATH']}\n")
+        
         run_command(f"cargo build --release --jobs {cores}", cwd=src_dir, env=env)
         
         # Copy binary
         log(f"\n📋 Collecting binaries...\n")
         binary = os.path.join(src_dir, "target", "release", "electrs")
+        
+        if not os.path.exists(binary):
+            raise RuntimeError(f"Electrs binary not found at expected location: {binary}")
+        
         output_dir = os.path.join(build_dir, "binaries", f"electrs-{version_clean}")
         copied = copy_binaries(src_dir, output_dir, [binary])
         
@@ -485,6 +734,8 @@ def compile_electrs_source(version, build_dir, cores):
 
     except Exception as e:
         log(f"\n❌ Error compiling Electrs: {e}\n")
+        import traceback
+        log(f"\nFull traceback:\n{traceback.format_exc()}\n")
         raise
 
 def compile_selected():
