@@ -407,10 +407,30 @@ def check_dependencies():
 
             if missing:
                 log(f"\n⚠️  Missing Homebrew packages: {', '.join(missing)}\n")
-                if messagebox.askyesno(
-                    "Install Missing Dependencies",
-                    f"The following packages are missing:\n\n{chr(10).join(missing)}\n\nInstall now?"
-                ):
+                
+                # Create a simple, safe message for the dialog
+                try:
+                    pkg_count = len(missing)
+                    pkg_list = ', '.join(missing[:5])  # Show first 5 packages
+                    if pkg_count > 5:
+                        pkg_list += f", and {pkg_count - 5} more"
+                    
+                    message = (
+                        f"Found {pkg_count} missing package{'s' if pkg_count > 1 else ''}:\n\n"
+                        f"{pkg_list}\n\n"
+                        f"Install all missing packages now?"
+                    )
+                    
+                    install_deps = messagebox.askyesno("Install Missing Dependencies", message)
+                except Exception as e:
+                    log(f"⚠️  Error showing dialog: {e}\n")
+                    # Fallback: ask in a simpler way
+                    install_deps = messagebox.askyesno(
+                        "Install Dependencies",
+                        f"Install {len(missing)} missing packages?"
+                    )
+                
+                if install_deps:
                     for pkg in missing:
                         log(f"\n📦 Installing {pkg}...\n")
                         try:
@@ -418,7 +438,10 @@ def check_dependencies():
                             log(f"✓ {pkg} installed successfully\n")
                         except Exception as e:
                             log(f"❌ Failed to install {pkg}: {e}\n")
-                            messagebox.showerror("Installation Failed", f"Failed to install {pkg}: {e}")
+                            try:
+                                messagebox.showerror("Installation Failed", f"Failed to install {pkg}")
+                            except:
+                                log("⚠️  Could not show error dialog\n")
                 else:
                     log("\n⚠️  Dependencies not installed. Compilation may fail.\n")
             else:
