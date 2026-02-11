@@ -387,7 +387,7 @@ def check_dependencies():
             # Note: berkeley-db@4 is only needed for wallet support, not for running a node
             brew_packages = [
                 "automake", "libtool", "pkg-config", "boost",
-                "miniupnpc", "zeromq", "sqlite", "python", "cmake", "llvm"
+                "miniupnpc", "zeromq", "sqlite", "python", "cmake", "llvm", "libevent", "rocksdb", "rust"
             ]
 
             log("\nChecking Homebrew packages...\n")
@@ -595,14 +595,7 @@ def compile_bitcoin_source(version, build_dir, cores):
             log(f"\n🔨 Building with CMake (Bitcoin Core {version})...\n")
             build_subdir = os.path.join(src_dir, "build")
             
-            # Configure with CMake - disable wallet support since we're only building a node
-            # Use -B to specify build directory (modern CMake syntax)
-            cmake_opts = [
-                "-DENABLE_WALLET=OFF",  # Disable wallet (no Berkeley DB or SQLite needed)
-                "-DBUILD_GUI=OFF",       # Disable GUI
-            ]
-            
-            cmake_cmd = f"cmake -B build {' '.join(cmake_opts)}"
+            cmake_cmd = f"cmake -B build -DENABLE_WALLET=OFF -DENABLE_IPC=OFF"
             log(f"\n⚙️  Configuring (wallet support disabled for node-only build)...\n")
             run_command(cmake_cmd, cwd=src_dir, env=env)
             
