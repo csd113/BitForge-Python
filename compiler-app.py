@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import tkinter as tk
@@ -10,6 +11,26 @@ import shutil
 import re
 import platform
 import time
+
+# ================== PYINSTALLER COMPATIBILITY ==================
+def is_pyinstaller():
+    """Check if running as PyInstaller bundle"""
+    return getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+
+def get_base_path():
+    """Get base path for resources (works with PyInstaller)"""
+    if is_pyinstaller():
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        return sys._MEIPASS
+    return os.path.abspath(".")
+
+# Set base path for resources
+BASE_PATH = get_base_path()
+
+# Fix macOS app bundle issues
+if is_pyinstaller() and platform.system() == 'Darwin':
+    # Prevent double-launch on macOS
+    os.environ['APP_STARTED'] = '1'
 
 # ================== FIX GUI APP PATH ==================
 os.environ["PATH"] = (
@@ -489,6 +510,23 @@ def initial_version_load():
         refresh_electrs_versions()
     threading.Thread(target=task, daemon=True).start()
 
+# ================== GLOBAL GUI VARIABLES ==================
+# These will be set by create_gui()
+root = None
+target_var = None
+cores_var = None
+build_dir_var = None
+bitcoin_version_var = None
+electrs_version_var = None
+bitcoin_combo = None
+electrs_combo = None
+log_text = None
+progress_var = None
+progress = None
+compile_btn = None
+bitcoin_status = None
+electrs_status = None
+
 # ================== BUILD FUNCTIONS ==================
 def copy_binaries(src_dir, dest_dir, binary_files):
     """Copy compiled binaries to destination directory"""
@@ -795,177 +833,241 @@ def compile_selected():
     threading.Thread(target=task, daemon=True).start()
 
 # ================== GUI ==================
-root = tk.Tk()
-root.title("Bitcoin & Electrs Compiler for macOS")
-root.geometry("900x800")
+def create_gui():
+    """Create and configure the main GUI window"""
+    global root, target_var, cores_var, build_dir_var, bitcoin_version_var, electrs_version_var
+    global bitcoin_combo, electrs_combo, log_text, progress_var, progress, compile_btn
+    global bitcoin_status, electrs_status
+    
+    root = tk.Tk()
+    root.title("Bitcoin & Electrs Compiler for macOS")
+    root.geometry("900x800")
+    
+    # Prevent window from being created multiple times
+    root.protocol("WM_DELETE_WINDOW", lambda: root.quit())
+    
+    # macOS specific: bring to front
+    if platform.system() == 'Darwin':
+        try:
+            root.lift()
+            root.attributes('-topmost', True)
+            root.after_idle(root.attributes, '-topmost', False)
+        except:
+            pass
+    
+    # Header
+    header = ttk.Label(
+        root,
+        text="Bitcoin Core & Electrs Compiler",
+        font=("Arial", 16, "bold")
+    )
+    header.pack(pady=10)
+    
+    # Dependency check button
+    dep_frame = ttk.Frame(root)
+    dep_frame.pack(pady=10)
+    ttk.Label(dep_frame, text="Step 1:", font=("Arial", 10, "bold")).pack(side="left", padx=5)
+    ttk.Button(
+        dep_frame,
+        text="Check & Install Dependencies",
+        command=check_dependencies
+    ).pack(side="left")
+    
+    # Separator
+    ttk.Separator(root, orient="horizontal").pack(fill="x", padx=20, pady=10)
+    
+    # Target selection
+    target_frame = ttk.LabelFrame(root, text="Step 2: Select What to Compile", padding=10)
+    target_frame.pack(fill="x", padx=20, pady=5)
+    
+    ttk.Label(target_frame, text="Target:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    target_var = tk.StringVar(value="Bitcoin")
+    target_combo = ttk.Combobox(
+        target_frame,
+        values=["Bitcoin", "Electrs", "Both"],
+        textvariable=target_var,
+        state="readonly",
+        width=15
+    )
+    target_combo.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    
+    # CPU cores
+    ttk.Label(target_frame, text="CPU Cores:").grid(row=0, column=2, sticky="w", padx=5, pady=5)
+    cores_var = tk.IntVar(value=max(1, multiprocessing.cpu_count() - 1))
+    cores_spinbox = ttk.Spinbox(
+        target_frame,
+        from_=1,
+        to=multiprocessing.cpu_count(),
+        textvariable=cores_var,
+        width=5
+    )
+    cores_spinbox.grid(row=0, column=3, sticky="w", padx=5, pady=5)
+    ttk.Label(
+        target_frame,
+        text=f"(max: {multiprocessing.cpu_count()})",
+        font=("Arial", 9)
+    ).grid(row=0, column=4, sticky="w", padx=2, pady=5)
+    
+    # Build directory
+    ttk.Label(target_frame, text="Build Directory:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+    build_dir_var = tk.StringVar(value=DEFAULT_BUILD_DIR)
+    build_entry = ttk.Entry(target_frame, textvariable=build_dir_var, width=40)
+    build_entry.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
+    ttk.Button(
+        target_frame,
+        text="Browse",
+        command=lambda: build_dir_var.set(filedialog.askdirectory(initialdir=build_dir_var.get()))
+    ).grid(row=1, column=4, padx=5, pady=5)
+    
+    # Version selection
+    version_frame = ttk.LabelFrame(root, text="Step 3: Select Versions", padding=10)
+    version_frame.pack(fill="x", padx=20, pady=5)
+    
+    # Bitcoin version
+    ttk.Label(version_frame, text="Bitcoin Version:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+    bitcoin_version_var = tk.StringVar(value="Loading...")
+    bitcoin_combo = ttk.Combobox(
+        version_frame,
+        values=["Loading..."],
+        textvariable=bitcoin_version_var,
+        state="readonly",
+        width=20
+    )
+    bitcoin_combo.grid(row=0, column=1, sticky="w", padx=5, pady=5)
+    ttk.Button(
+        version_frame,
+        text="Refresh",
+        command=lambda: threading.Thread(target=refresh_bitcoin_versions, daemon=True).start()
+    ).grid(row=0, column=2, padx=5, pady=5)
+    
+    # Electrs version
+    ttk.Label(version_frame, text="Electrs Version:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
+    electrs_version_var = tk.StringVar(value="Loading...")
+    electrs_combo = ttk.Combobox(
+        version_frame,
+        values=["Loading..."],
+        textvariable=electrs_version_var,
+        state="readonly",
+        width=20
+    )
+    electrs_combo.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+    ttk.Button(
+        version_frame,
+        text="Refresh",
+        command=lambda: threading.Thread(target=refresh_electrs_versions, daemon=True).start()
+    ).grid(row=1, column=2, padx=5, pady=5)
+    
+    # Progress bar
+    progress_frame = ttk.Frame(root)
+    progress_frame.pack(fill="x", padx=20, pady=10)
+    ttk.Label(progress_frame, text="Progress:").pack(anchor="w")
+    progress_var = tk.DoubleVar()
+    progress = ttk.Progressbar(progress_frame, variable=progress_var, maximum=100)
+    progress.pack(fill="x", pady=5)
+    
+    # Log terminal
+    log_frame = ttk.LabelFrame(root, text="Build Log", padding=5)
+    log_frame.pack(fill="both", expand=True, padx=20, pady=5)
+    
+    log_text_frame = tk.Frame(log_frame)
+    log_text_frame.pack(fill="both", expand=True)
+    
+    log_text = tk.Text(
+        log_text_frame,
+        height=15,
+        wrap="none",
+        bg="#1e1e1e",
+        fg="#00ff00",
+        font=("Courier", 10)
+    )
+    log_text.pack(side="left", fill="both", expand=True)
+    
+    scrollbar_y = ttk.Scrollbar(log_text_frame, command=log_text.yview)
+    scrollbar_y.pack(side="right", fill="y")
+    log_text.config(yscrollcommand=scrollbar_y.set)
+    
+    scrollbar_x = ttk.Scrollbar(log_frame, orient="horizontal", command=log_text.xview)
+    scrollbar_x.pack(fill="x")
+    log_text.config(xscrollcommand=scrollbar_x.set)
+    
+    # Compile button
+    button_frame = ttk.Frame(root)
+    button_frame.pack(pady=10)
+    compile_btn = ttk.Button(
+        button_frame,
+        text="🚀 Start Compilation",
+        command=compile_selected
+    )
+    compile_btn.pack()
+    
+    # Status bar
+    status_frame = ttk.Frame(root)
+    status_frame.pack(fill="x", side="bottom")
+    status_text = (
+        f"System: macOS {platform.mac_ver()[0]} | "
+        f"Homebrew: {BREW_PREFIX if BREW_PREFIX else 'Not Found'} | "
+        f"CPUs: {multiprocessing.cpu_count()}"
+    )
+    status_label = ttk.Label(
+        status_frame,
+        text=status_text,
+        relief="sunken",
+        anchor="w"
+    )
+    status_label.pack(fill="x")
+    
+    # Initial log message
+    log("=" * 60 + "\n")
+    log("Bitcoin Core & Electrs Compiler\n")
+    log("=" * 60 + "\n")
+    log(f"System: macOS {platform.mac_ver()[0]}\n")
+    log(f"Homebrew: {BREW_PREFIX if BREW_PREFIX else 'Not Found'}\n")
+    log(f"CPU Cores: {multiprocessing.cpu_count()}\n")
+    if is_pyinstaller():
+        log(f"Running as: PyInstaller Bundle\n")
+    log("=" * 60 + "\n\n")
+    log("👉 Click 'Check & Install Dependencies' to begin\n\n")
+    
+    # Load versions after GUI is ready
+    root.after(100, initial_version_load)
+    
+    return root
 
-# Header
-header = ttk.Label(
-    root,
-    text="Bitcoin Core & Electrs Compiler",
-    font=("Arial", 16, "bold")
-)
-header.pack(pady=10)
+# ================== MAIN ==================
+def main():
+    """Main entry point with exception handling"""
+    global root
+    
+    try:
+        # Create the GUI
+        root = create_gui()
+        
+        # Start the GUI event loop
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("\nApplication interrupted by user")
+        sys.exit(0)
+    except Exception as e:
+        # Log any uncaught exceptions
+        error_msg = f"Fatal error: {e}\n"
+        print(error_msg, file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        
+        # Try to show error dialog if possible
+        try:
+            messagebox.showerror(
+                "Fatal Error",
+                f"Application crashed:\n\n{e}\n\nCheck console for details."
+            )
+        except:
+            pass
+        
+        sys.exit(1)
 
-# Dependency check button
-dep_frame = ttk.Frame(root)
-dep_frame.pack(pady=10)
-ttk.Label(dep_frame, text="Step 1:", font=("Arial", 10, "bold")).pack(side="left", padx=5)
-ttk.Button(
-    dep_frame,
-    text="Check & Install Dependencies",
-    command=check_dependencies
-).pack(side="left")
-
-# Separator
-ttk.Separator(root, orient="horizontal").pack(fill="x", padx=20, pady=10)
-
-# Target selection
-target_frame = ttk.LabelFrame(root, text="Step 2: Select What to Compile", padding=10)
-target_frame.pack(fill="x", padx=20, pady=5)
-
-ttk.Label(target_frame, text="Target:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
-target_var = tk.StringVar(value="Bitcoin")
-target_combo = ttk.Combobox(
-    target_frame,
-    values=["Bitcoin", "Electrs", "Both"],
-    textvariable=target_var,
-    state="readonly",
-    width=15
-)
-target_combo.grid(row=0, column=1, sticky="w", padx=5, pady=5)
-
-# CPU cores
-ttk.Label(target_frame, text="CPU Cores:").grid(row=0, column=2, sticky="w", padx=5, pady=5)
-cores_var = tk.IntVar(value=max(1, multiprocessing.cpu_count() - 1))
-cores_spinbox = ttk.Spinbox(
-    target_frame,
-    from_=1,
-    to=multiprocessing.cpu_count(),
-    textvariable=cores_var,
-    width=5
-)
-cores_spinbox.grid(row=0, column=3, sticky="w", padx=5, pady=5)
-ttk.Label(
-    target_frame,
-    text=f"(max: {multiprocessing.cpu_count()})",
-    font=("Arial", 9)
-).grid(row=0, column=4, sticky="w", padx=2, pady=5)
-
-# Build directory
-ttk.Label(target_frame, text="Build Directory:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-build_dir_var = tk.StringVar(value=DEFAULT_BUILD_DIR)
-build_entry = ttk.Entry(target_frame, textvariable=build_dir_var, width=40)
-build_entry.grid(row=1, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
-ttk.Button(
-    target_frame,
-    text="Browse",
-    command=lambda: build_dir_var.set(filedialog.askdirectory(initialdir=build_dir_var.get()))
-).grid(row=1, column=4, padx=5, pady=5)
-
-# Version selection
-version_frame = ttk.LabelFrame(root, text="Step 3: Select Versions", padding=10)
-version_frame.pack(fill="x", padx=20, pady=5)
-
-# Bitcoin version
-ttk.Label(version_frame, text="Bitcoin Version:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
-bitcoin_version_var = tk.StringVar(value="Loading...")
-bitcoin_combo = ttk.Combobox(
-    version_frame,
-    values=["Loading..."],
-    textvariable=bitcoin_version_var,
-    state="readonly",
-    width=20
-)
-bitcoin_combo.grid(row=0, column=1, sticky="w", padx=5, pady=5)
-ttk.Button(
-    version_frame,
-    text="Refresh",
-    command=lambda: threading.Thread(target=refresh_bitcoin_versions, daemon=True).start()
-).grid(row=0, column=2, padx=5, pady=5)
-
-# Electrs version
-ttk.Label(version_frame, text="Electrs Version:").grid(row=1, column=0, sticky="w", padx=5, pady=5)
-electrs_version_var = tk.StringVar(value="Loading...")
-electrs_combo = ttk.Combobox(
-    version_frame,
-    values=["Loading..."],
-    textvariable=electrs_version_var,
-    state="readonly",
-    width=20
-)
-electrs_combo.grid(row=1, column=1, sticky="w", padx=5, pady=5)
-ttk.Button(
-    version_frame,
-    text="Refresh",
-    command=lambda: threading.Thread(target=refresh_electrs_versions, daemon=True).start()
-).grid(row=1, column=2, padx=5, pady=5)
-
-# Progress bar
-progress_frame = ttk.Frame(root)
-progress_frame.pack(fill="x", padx=20, pady=10)
-ttk.Label(progress_frame, text="Progress:").pack(anchor="w")
-progress_var = tk.DoubleVar()
-progress = ttk.Progressbar(progress_frame, variable=progress_var, maximum=100)
-progress.pack(fill="x", pady=5)
-
-# Log terminal
-log_frame = ttk.LabelFrame(root, text="Build Log", padding=5)
-log_frame.pack(fill="both", expand=True, padx=20, pady=5)
-
-log_text_frame = tk.Frame(log_frame)
-log_text_frame.pack(fill="both", expand=True)
-
-log_text = tk.Text(
-    log_text_frame,
-    height=15,
-    wrap="none",
-    bg="#1e1e1e",
-    fg="#00ff00",
-    font=("Courier", 10)
-)
-log_text.pack(side="left", fill="both", expand=True)
-
-scrollbar_y = ttk.Scrollbar(log_text_frame, command=log_text.yview)
-scrollbar_y.pack(side="right", fill="y")
-log_text.config(yscrollcommand=scrollbar_y.set)
-
-scrollbar_x = ttk.Scrollbar(log_frame, orient="horizontal", command=log_text.xview)
-scrollbar_x.pack(fill="x")
-log_text.config(xscrollcommand=scrollbar_x.set)
-
-# Compile button
-button_frame = ttk.Frame(root)
-button_frame.pack(pady=10)
-compile_btn = ttk.Button(
-    button_frame,
-    text="🚀 Start Compilation",
-    command=compile_selected
-)
-compile_btn.pack()
-
-# Status bar
-status_frame = ttk.Frame(root)
-status_frame.pack(fill="x", side="bottom")
-status_label = ttk.Label(
-    status_frame,
-    text=f"System: macOS {platform.mac_ver()[0]} | Homebrew: {BREW_PREFIX if BREW_PREFIX else 'Not Found'} | CPUs: {multiprocessing.cpu_count()}",
-    relief="sunken",
-    anchor="w"
-)
-status_label.pack(fill="x")
-
-# Initial log message
-log("=" * 60 + "\n")
-log("Bitcoin Core & Electrs Compiler\n")
-log("=" * 60 + "\n")
-log(f"System: macOS {platform.mac_ver()[0]}\n")
-log(f"Homebrew: {BREW_PREFIX if BREW_PREFIX else 'Not Found'}\n")
-log(f"CPU Cores: {multiprocessing.cpu_count()}\n")
-log("=" * 60 + "\n\n")
-log("👉 Click 'Check & Install Dependencies' to begin\n\n")
-
-# Load versions after GUI is ready
-root.after(100, initial_version_load)
-
-root.mainloop()
+if __name__ == "__main__":
+    # Prevent re-execution in frozen apps
+    if is_pyinstaller():
+        multiprocessing.freeze_support()
+    
+    main()
