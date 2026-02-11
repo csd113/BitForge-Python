@@ -42,7 +42,7 @@ if [ ! -f "bitcoin_compiler.spec" ]; then
         --noconfirm \
         --clean \
         --osx-bundle-identifier com.bitcointools.compiler \
-        compile_bitcoind_gui_fixed.py
+        compile_bitcoind_gui.py
 else
     echo "📋 Using bitcoin_compiler.spec"
     echo ""
