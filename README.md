@@ -5,9 +5,11 @@ python based app that checks dependancies and is able to auto compile both bitco
 # How to install:
  1. Make sure you have the files
 ### Should see:
-   compile_bitcoind_gui.py
-   bitcoin_compiler.spec
-   build_app.sh
+   - compile_bitcoind_gui.py
+     
+   - bitcoin_compiler.spec
+     
+   - build_app.sh
 
 ### 2. Run the build script
 ```
