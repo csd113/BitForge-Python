@@ -604,7 +604,7 @@ def compile_bitcoin_source(version, build_dir, cores):
             
             # Binary locations for CMake build
             build_subdir = os.path.join(src_dir, "build")
-            binary_dir = os.path.join(build_subdir, "src")
+            binary_dir = os.path.join(build_subdir, "bin")
             binaries = [
                 os.path.join(binary_dir, "bitcoind"),
                 os.path.join(binary_dir, "bitcoin-cli"),
@@ -634,7 +634,7 @@ def compile_bitcoin_source(version, build_dir, cores):
             run_command(f"make -j{cores}", cwd=src_dir, env=env)
             
             # Binary locations for Autotools build
-            binary_dir = os.path.join(src_dir, "src")
+            binary_dir = os.path.join(src_dir, "bin")
             binaries = [
                 os.path.join(binary_dir, "bitcoind"),
                 os.path.join(binary_dir, "bitcoin-cli"),
