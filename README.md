@@ -31,8 +31,9 @@ pip3 install pyinstaller
 
 ### Build the BitForge App
 ```
-git clone https://github.com/csd113/BitForge-Python.git && cd BitForge-Python && chmod +x build.sh && ./build.sh
+cd Downloads/ && git clone https://github.com/csd113/BitForge-Python.git && cd BitForge-Python && chmod +x build.sh && ./build.sh
 ```
+#### The built app will be found in Downloads/BitForge-python/dist
 
 ## ✨ Features
 
