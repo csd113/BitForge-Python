@@ -11,6 +11,7 @@ import shutil
 import re
 import platform
 import time
+import hashlib
 
 # ================== PYINSTALLER COMPATIBILITY ==================
 def is_pyinstaller():
@@ -45,6 +46,19 @@ ELECTRS_API = "https://api.github.com/repos/romanz/electrs/releases"
 ELECTRS_REPO = "https://github.com/romanz/electrs.git"
 DEFAULT_BUILD_DIR = os.path.expanduser("~/Downloads/bitcoin_builds")
 
+# ================== ARCHITECTURE DETECTION ==================
+def get_architecture():
+    """Detect if running on Apple Silicon or Intel Mac"""
+    machine = platform.machine()
+    if machine == "arm64":
+        return "apple_silicon"
+    elif machine == "x86_64":
+        return "intel"
+    else:
+        return "unknown"
+
+ARCH = get_architecture()
+
 # ================== HOMEBREW DETECTION ==================
 def find_brew():
     """Find Homebrew installation (Apple Silicon or Intel Mac)"""
@@ -63,6 +77,164 @@ if BREW:
         BREW_PREFIX = "/usr/local"
 else:
     BREW_PREFIX = None
+
+# ================== SHA256 VERIFICATION ==================
+def calculate_sha256(filepath, chunk_size=8192):
+    """Calculate SHA256 hash of a file"""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                sha256_hash.update(chunk)
+        return sha256_hash.hexdigest()
+    except Exception as e:
+        log(f"❌ Error calculating SHA256: {e}\n")
+        return None
+
+def verify_git_commit(repo_dir, expected_tag):
+    """Verify git repository is at the expected tag/commit"""
+    try:
+        # Get current commit hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            log(f"⚠️  Could not get commit hash\n")
+            return False
+        
+        current_commit = result.stdout.strip()
+        
+        # Get commit hash for the tag
+        result = subprocess.run(
+            ["git", "rev-list", "-n", "1", expected_tag],
+            cwd=repo_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            log(f"⚠️  Could not get tag commit hash\n")
+            return False
+        
+        tag_commit = result.stdout.strip()
+        
+        if current_commit == tag_commit:
+            log(f"✓ Git repository verified at {expected_tag}\n")
+            log(f"  Commit: {current_commit[:16]}...\n")
+            return True
+        else:
+            log(f"⚠️  Repository commit mismatch!\n")
+            log(f"  Current: {current_commit[:16]}...\n")
+            log(f"  Expected: {tag_commit[:16]}...\n")
+            return False
+            
+    except Exception as e:
+        log(f"⚠️  Error verifying git commit: {e}\n")
+        return False
+
+def verify_source_integrity(repo_dir, project_name, version):
+    """Verify source code integrity using git commit verification"""
+    log(f"\n🔐 Verifying {project_name} source integrity...\n")
+    
+    if verify_git_commit(repo_dir, version):
+        log(f"✓ {project_name} source integrity verified!\n")
+        return True
+    else:
+        log(f"⚠️  {project_name} source verification failed\n")
+        response = messagebox.askyesno(
+            "Source Verification Warning",
+            f"{project_name} source code could not be verified.\n\n"
+            f"This could indicate:\n"
+            f"• Network issues during clone\n"
+            f"• Repository corruption\n"
+            f"• Unexpected git state\n\n"
+            f"Continue anyway? (Not recommended)"
+        )
+        return response
+
+# ================== OPTIMIZATION FLAGS ==================
+def get_optimization_flags(use_aggressive=False):
+    """Get compiler optimization flags based on architecture and settings"""
+    flags = {}
+    
+    if ARCH == "apple_silicon":
+        # Apple Silicon (M1/M2/M3) optimizations
+        base_flags = [
+            "-mcpu=apple-m1",  # or apple-m2 for newer chips
+            "-O2",              # Safe optimization level
+            "-fomit-frame-pointer",
+            "-fno-common",
+        ]
+        
+        if use_aggressive:
+            # Aggressive optimizations (may break some code)
+            aggressive_flags = [
+                "-O3",           # Maximum optimization
+                "-flto",         # Link-time optimization
+                "-march=armv8.5-a+fp16+crypto+dotprod",
+            ]
+            flags['CFLAGS'] = ' '.join(base_flags + aggressive_flags)
+            flags['CXXFLAGS'] = ' '.join(base_flags + aggressive_flags)
+            flags['LDFLAGS'] = '-flto'
+        else:
+            flags['CFLAGS'] = ' '.join(base_flags)
+            flags['CXXFLAGS'] = ' '.join(base_flags)
+            flags['LDFLAGS'] = ''
+            
+    elif ARCH == "intel":
+        # Intel Mac optimizations
+        base_flags = [
+            "-march=native",    # Optimize for current CPU
+            "-O2",              # Safe optimization level
+            "-fomit-frame-pointer",
+            "-fno-common",
+        ]
+        
+        if use_aggressive:
+            # Aggressive optimizations
+            aggressive_flags = [
+                "-O3",           # Maximum optimization
+                "-flto",         # Link-time optimization
+                "-mtune=native",
+            ]
+            flags['CFLAGS'] = ' '.join(base_flags + aggressive_flags)
+            flags['CXXFLAGS'] = ' '.join(base_flags + aggressive_flags)
+            flags['LDFLAGS'] = '-flto'
+        else:
+            flags['CFLAGS'] = ' '.join(base_flags)
+            flags['CXXFLAGS'] = ' '.join(base_flags)
+            flags['LDFLAGS'] = ''
+    else:
+        # Unknown architecture - use safe defaults
+        flags['CFLAGS'] = '-O2'
+        flags['CXXFLAGS'] = '-O2'
+        flags['LDFLAGS'] = ''
+    
+    return flags
+
+def get_rust_optimization_flags(use_aggressive=False):
+    """Get Rust/Cargo optimization flags"""
+    flags = {}
+    
+    if use_aggressive:
+        # Aggressive Rust optimizations
+        # Note: When using LTO, we must enable embed-bitcode
+        flags['RUSTFLAGS'] = '-C opt-level=3 -C target-cpu=native'
+        flags['CARGO_PROFILE_RELEASE_LTO'] = 'fat'
+        flags['CARGO_PROFILE_RELEASE_OPT_LEVEL'] = '3'
+        flags['CARGO_PROFILE_RELEASE_EMBED_BITCODE'] = 'yes'
+    else:
+        # Standard release optimizations
+        flags['RUSTFLAGS'] = '-C opt-level=2 -C target-cpu=native'
+        flags['CARGO_PROFILE_RELEASE_OPT_LEVEL'] = '2'
+    
+    return flags
 
 # ================== GUI HELPERS ==================
 def log(msg):
@@ -127,17 +299,40 @@ def get_bitcoin_versions():
     try:
         r = requests.get(BITCOIN_API, timeout=10)
         r.raise_for_status()
-        versions = []
+        
+        # Collect all non-RC versions
+        all_versions = []
         for rel in r.json():
             tag = rel["tag_name"]
             # Skip release candidates
             if "rc" in tag.lower():
                 continue
-            versions.append(tag)
-            if len(versions) == 10:
+            all_versions.append(tag)
+            if len(all_versions) == 20:  # Get more to filter from
                 break
-        log(f"Found {len(versions)} Bitcoin versions\n")
-        return versions
+        
+        # Group by major.minor version, keeping only the latest patch
+        version_groups = {}
+        for tag in all_versions:
+            # Parse version (e.g., "v29.3" -> (29, 3))
+            major, minor = parse_version(tag)
+            key = f"{major}.{minor}"
+            
+            if key not in version_groups:
+                version_groups[key] = []
+            version_groups[key].append(tag)
+        
+        # For each major.minor, keep only the highest patch version
+        filtered_versions = []
+        for key in sorted(version_groups.keys(), key=lambda x: tuple(map(int, x.split('.'))), reverse=True):
+            # Sort versions in this group and take the first (latest)
+            group = sorted(version_groups[key], key=lambda v: parse_version(v), reverse=True)
+            filtered_versions.append(group[0])
+            if len(filtered_versions) == 5:  # Only keep 5 versions
+                break
+        
+        log(f"Found {len(filtered_versions)} Bitcoin versions (latest patch only)\n")
+        return filtered_versions
     except Exception as e:
         log(f"Failed to fetch Bitcoin versions: {e}\n")
         # Return empty list on failure, don't show error dialog during init
@@ -155,7 +350,7 @@ def get_electrs_versions():
             if "rc" in tag.lower():
                 continue
             versions.append(tag)
-            if len(versions) == 10:
+            if len(versions) == 3:  # Only keep 3 versions
                 break
         log(f"Found {len(versions)} Electrs versions\n")
         return versions
@@ -165,7 +360,7 @@ def get_electrs_versions():
         return []
 
 # ================== ENVIRONMENT SETUP ==================
-def setup_build_environment():
+def setup_build_environment(use_aggressive_opts=False):
     """Setup environment variables for building"""
     env = os.environ.copy()
     
@@ -228,6 +423,13 @@ def setup_build_environment():
             env["LIBCLANG_PATH"] = f"{llvm_prefix}/lib"
             env["DYLD_LIBRARY_PATH"] = f"{llvm_prefix}/lib"
             break
+    
+    # Add optimization flags
+    opt_flags = get_optimization_flags(use_aggressive_opts)
+    for key, value in opt_flags.items():
+        if value:  # Only set non-empty values
+            env[key] = value
+            log(f"  {key}: {value}\n")
     
     # Note: Berkeley DB is NOT configured here as it's only needed for legacy wallet support
     # For running a Bitcoin node (bitcoind), wallet support is disabled in the build
@@ -488,9 +690,9 @@ def refresh_bitcoin_versions():
     versions = get_bitcoin_versions()
     if versions:
         bitcoin_combo.configure(values=versions)
-        if bitcoin_version_var.get() not in versions:
-            bitcoin_version_var.set(versions[0])
-        log(f"✓ Loaded {len(versions)} Bitcoin versions\n")
+        # Always set to the first (newest) version
+        bitcoin_version_var.set(versions[0])
+        log(f"✓ Loaded {len(versions)} Bitcoin versions (selected: {versions[0]})\n")
     else:
         log("⚠️  Could not fetch Bitcoin versions (check internet connection)\n")
         messagebox.showwarning("Network Error", "Could not fetch Bitcoin versions. Check your internet connection.")
@@ -501,9 +703,9 @@ def refresh_electrs_versions():
     versions = get_electrs_versions()
     if versions:
         electrs_combo.configure(values=versions)
-        if electrs_version_var.get() not in versions:
-            electrs_version_var.set(versions[0])
-        log(f"✓ Loaded {len(versions)} Electrs versions\n")
+        # Always set to the first (newest) version
+        electrs_version_var.set(versions[0])
+        log(f"✓ Loaded {len(versions)} Electrs versions (selected: {versions[0]})\n")
     else:
         log("⚠️  Could not fetch Electrs versions (check internet connection)\n")
         messagebox.showwarning("Network Error", "Could not fetch Electrs versions. Check your internet connection.")
@@ -531,6 +733,7 @@ progress = None
 compile_btn = None
 bitcoin_status = None
 electrs_status = None
+aggressive_opts_var = None
 
 # ================== BUILD FUNCTIONS ==================
 def copy_binaries(src_dir, dest_dir, binary_files):
@@ -559,11 +762,14 @@ def copy_binaries(src_dir, dest_dir, binary_files):
     
     return copied
 
-def compile_bitcoin_source(version, build_dir, cores):
+def compile_bitcoin_source(version, build_dir, cores, use_aggressive_opts=False):
     """Compile Bitcoin Core from source using git clone"""
     try:
         log(f"\n{'='*60}\n")
         log(f"COMPILING BITCOIN CORE {version}\n")
+        log(f"{'='*60}\n")
+        log(f"Architecture: {ARCH.upper()}\n")
+        log(f"Optimization: {'AGGRESSIVE (O3 + LTO)' if use_aggressive_opts else 'STANDARD (O2)'}\n")
         log(f"{'='*60}\n")
         
         version_clean = version.lstrip('v')
@@ -587,11 +793,22 @@ def compile_bitcoin_source(version, build_dir, cores):
             run_command(f"git checkout {version}", cwd=src_dir)
             log(f"✓ Updated to {version}\n")
 
-        # Setup environment
-        env = setup_build_environment()
+        # Verify source integrity
+        if not verify_source_integrity(src_dir, "Bitcoin Core", version):
+            log("❌ User cancelled due to verification failure\n")
+            raise RuntimeError("Source verification failed")
+
+        # Setup environment with optimization flags
+        env = setup_build_environment(use_aggressive_opts)
         
         log(f"\nEnvironment setup:\n")
         log(f"  PATH: {env['PATH'][:150]}...\n")
+        if 'CFLAGS' in env:
+            log(f"  CFLAGS: {env['CFLAGS']}\n")
+        if 'CXXFLAGS' in env:
+            log(f"  CXXFLAGS: {env['CXXFLAGS']}\n")
+        if 'LDFLAGS' in env and env['LDFLAGS']:
+            log(f"  LDFLAGS: {env['LDFLAGS']}\n")
         log(f"  Building node-only (wallet support disabled)\n")
         
         # Determine build method
@@ -671,15 +888,25 @@ def compile_bitcoin_source(version, build_dir, cores):
         log(f"\nFull traceback:\n{traceback.format_exc()}\n")
         raise
 
-def compile_electrs_source(version, build_dir, cores):
+def compile_electrs_source(version, build_dir, cores, use_aggressive_opts=False):
     """Compile Electrs from source using git clone"""
     try:
         log(f"\n{'='*60}\n")
         log(f"COMPILING ELECTRS {version}\n")
         log(f"{'='*60}\n")
+        log(f"Architecture: {ARCH.upper()}\n")
+        log(f"Optimization: {'AGGRESSIVE (O3 + LTO)' if use_aggressive_opts else 'STANDARD (O2)'}\n")
+        log(f"{'='*60}\n")
         
-        # Setup environment with LLVM
-        env = setup_build_environment()
+        # Setup environment with LLVM and Rust optimization flags
+        env = setup_build_environment(use_aggressive_opts)
+        
+        # Add Rust-specific optimization flags
+        rust_flags = get_rust_optimization_flags(use_aggressive_opts)
+        for key, value in rust_flags.items():
+            if value:
+                env[key] = value
+                log(f"  {key}: {value}\n")
         
         # Verify Rust is available before proceeding
         log("\n🔍 Verifying Rust installation...\n")
@@ -742,11 +969,18 @@ def compile_electrs_source(version, build_dir, cores):
             run_command(f"git checkout {version}", cwd=src_dir, env=env)
             log(f"✓ Updated to {version}\n")
         
+        # Verify source integrity
+        if not verify_source_integrity(src_dir, "Electrs", version):
+            log("❌ User cancelled due to verification failure\n")
+            raise RuntimeError("Source verification failed")
+        
         log(f"\n🔧 Building with Cargo ({cores} jobs)...\n")
         log(f"Environment details:\n")
         log(f"  PATH: {env['PATH'][:150]}...\n")
         if 'LIBCLANG_PATH' in env:
             log(f"  LIBCLANG_PATH: {env['LIBCLANG_PATH']}\n")
+        if 'RUSTFLAGS' in env:
+            log(f"  RUSTFLAGS: {env['RUSTFLAGS']}\n")
         
         run_command(f"cargo build --release --jobs {cores}", cwd=src_dir, env=env)
         
@@ -780,11 +1014,29 @@ def compile_selected():
     build_dir = build_dir_var.get()
     bitcoin_ver = bitcoin_version_var.get()
     electrs_ver = electrs_version_var.get()
+    use_aggressive = aggressive_opts_var.get()
 
     def task():
         try:
             set_progress(0)
             compile_btn.config(state="disabled")
+            
+            # Show warning if aggressive optimizations are enabled
+            if use_aggressive:
+                response = messagebox.askyesno(
+                    "Aggressive Optimizations Enabled",
+                    "⚠️  WARNING: You have enabled aggressive optimizations (O3 + LTO)\n\n"
+                    "These flags may:\n"
+                    "• Increase build time significantly\n"
+                    "• Potentially introduce bugs or instability\n"
+                    "• May not work with all versions\n\n"
+                    "Recommended for advanced users only.\n\n"
+                    "Continue with aggressive optimizations?",
+                    icon='warning'
+                )
+                if not response:
+                    log("\n❌ User cancelled compilation due to aggressive optimization warning\n")
+                    return
             
             # Validate versions are loaded
             if target in ["Bitcoin", "Both"]:
@@ -801,13 +1053,13 @@ def compile_selected():
             
             if target in ["Bitcoin", "Both"]:
                 set_progress(10)
-                output_dir = compile_bitcoin_source(bitcoin_ver, build_dir, cores)
+                output_dir = compile_bitcoin_source(bitcoin_ver, build_dir, cores, use_aggressive)
                 output_dirs.append(output_dir)
                 set_progress(50)
             
             if target in ["Electrs", "Both"]:
                 set_progress(60 if target == "Both" else 10)
-                output_dir = compile_electrs_source(electrs_ver, build_dir, cores)
+                output_dir = compile_electrs_source(electrs_ver, build_dir, cores, use_aggressive)
                 output_dirs.append(output_dir)
                 set_progress(100)
             
@@ -834,11 +1086,11 @@ def create_gui():
     """Create and configure the main GUI window"""
     global root, target_var, cores_var, build_dir_var, bitcoin_version_var, electrs_version_var
     global bitcoin_combo, electrs_combo, log_text, progress_var, progress, compile_btn
-    global bitcoin_status, electrs_status
+    global bitcoin_status, electrs_status, aggressive_opts_var
     
     root = tk.Tk()
     root.title("Bitcoin & Electrs Compiler for macOS")
-    root.geometry("900x800")
+    root.geometry("900x850")
     
     # Prevent window from being created multiple times
     root.protocol("WM_DELETE_WINDOW", lambda: root.quit())
@@ -859,6 +1111,13 @@ def create_gui():
         font=("Arial", 16, "bold")
     )
     header.pack(pady=10)
+    
+    # Architecture info
+    arch_text = f"Architecture: {ARCH.upper()}" + (
+        " (Apple Silicon)" if ARCH == "apple_silicon" else " (Intel Mac)" if ARCH == "intel" else ""
+    )
+    arch_label = ttk.Label(root, text=arch_text, font=("Arial", 10))
+    arch_label.pack()
     
     # Dependency check button
     dep_frame = ttk.Frame(root)
@@ -915,6 +1174,27 @@ def create_gui():
         text="Browse",
         command=lambda: build_dir_var.set(filedialog.askdirectory(initialdir=build_dir_var.get()))
     ).grid(row=1, column=4, padx=5, pady=5)
+    
+    # Optimization options
+    opt_frame = ttk.LabelFrame(root, text="Step 2.5: Optimization Settings", padding=10)
+    opt_frame.pack(fill="x", padx=20, pady=5)
+    
+    aggressive_opts_var = tk.BooleanVar(value=False)
+    aggressive_check = ttk.Checkbutton(
+        opt_frame,
+        text="⚡ Enable Aggressive Optimizations (O3 + LTO) - May break code, use with caution!",
+        variable=aggressive_opts_var
+    )
+    aggressive_check.pack(anchor="w", padx=5, pady=5)
+    
+    opt_info = ttk.Label(
+        opt_frame,
+        text="ℹ️  Standard build uses O2 optimizations. Aggressive mode adds O3 and Link-Time Optimization.\n"
+             "   Aggressive optimizations may significantly increase compile time and could introduce bugs.",
+        font=("Arial", 9),
+        foreground="gray"
+    )
+    opt_info.pack(anchor="w", padx=5, pady=(0, 5))
     
     # Version selection
     version_frame = ttk.LabelFrame(root, text="Step 3: Select Versions", padding=10)
@@ -1002,6 +1282,7 @@ def create_gui():
     status_frame.pack(fill="x", side="bottom")
     status_text = (
         f"System: macOS {platform.mac_ver()[0]} | "
+        f"Arch: {ARCH} | "
         f"Homebrew: {BREW_PREFIX if BREW_PREFIX else 'Not Found'} | "
         f"CPUs: {multiprocessing.cpu_count()}"
     )
@@ -1018,13 +1299,19 @@ def create_gui():
     log("Bitcoin Core & Electrs Compiler\n")
     log("=" * 60 + "\n")
     log(f"System: macOS {platform.mac_ver()[0]}\n")
+    log(f"Architecture: {ARCH}\n")
     log(f"Homebrew: {BREW_PREFIX if BREW_PREFIX else 'Not Found'}\n")
     log(f"CPU Cores: {multiprocessing.cpu_count()}\n")
     if is_pyinstaller():
         log(f"Running as: PyInstaller Bundle\n")
     log("=" * 60 + "\n\n")
+    log("🔧 Features:\n")
+    log("  • Architecture-specific optimizations\n")
+    log("  • SHA256 source verification\n")
+    log("  • Optional aggressive O3 + LTO optimizations\n\n")
     log("👉 Click 'Check & Install Dependencies' to begin\n\n")
-    log("📝 Note: Both Bitcoin and Electrs now pull source from GitHub\n\n")
+    log("📝 Note: Both Bitcoin and Electrs now pull source from GitHub\n")
+    log("🔐 Note: Source integrity is verified using git commit hashes\n\n")
     
     # Load versions after GUI is ready
     root.after(100, initial_version_load)
