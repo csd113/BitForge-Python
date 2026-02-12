@@ -3,7 +3,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['compile_bitcoind_gui.py'],
+    ['bitforge-python.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -46,7 +46,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='Bitcoin Electrs Compiler',
+    name='BitForge',
     debug=False,
     bootloader_ignore_signals=False,
     strip=True,
@@ -62,12 +62,12 @@ coll = COLLECT(
     strip=True,
     upx=False,
     upx_exclude=[],
-    name='Bitcoin Electrs Compiler',
+    name='BitForge',
 )
 
 app = BUNDLE(
     coll,
-    name='Bitcoin Electrs Compiler.app',
+    name='Bitforge.app',
     icon='image.icns',
     bundle_identifier='com.bitcoin.electrs.compiler',
 )
